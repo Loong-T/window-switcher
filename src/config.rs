@@ -649,6 +649,7 @@ mod tests {
             switch_windows_merge_browser_profiles: true,
             switch_apps_enable: true,
             log_level: "debug".to_string(),
+            log_path: r"C:\\Users\\loong\\Programs\\window-switcher\\log.log".to_string(),
             ..values
         };
         let updated = apply_ini_values(DEFAULT_CONFIG, "\n", &values);
@@ -665,11 +666,22 @@ mod tests {
         assert!(updated.contains("merge_browser_profiles = yes"));
         assert!(updated.contains("enable = yes"));
         assert!(updated.contains("level = debug"));
+        // escaped paths are written back verbatim
+        assert!(updated.contains(r"path = C:\\Users\\loong\\Programs\\window-switcher\\log.log"));
         assert!(!updated.contains("hotkey = alt+`"));
 
-        // every managed value must survive a reload
-        let reloaded = ini_values_from(&Ini::load_from_str(&updated).unwrap());
+        // every managed value must survive a reload (same options as the app)
+        let reloaded = ini_values_from(&load_ini_no_escape(&updated));
         assert_eq!(reloaded, values);
+
+        // and Config must still resolve the escaped path to a real one
+        let conf = Config::load(&load_ini_no_escape(&updated)).unwrap();
+        assert_eq!(
+            conf.log_file,
+            Some(PathBuf::from(
+                r"C:\Users\loong\Programs\window-switcher\log.log"
+            ))
+        );
     }
 
     #[test]
@@ -703,8 +715,17 @@ mod tests {
         assert!(updated.contains("; a comment"));
         assert!(updated.contains("\r\n"));
 
-        let reloaded = ini_values_from(&Ini::load_from_str(&updated).unwrap());
+        let reloaded = ini_values_from(&load_ini_no_escape(&updated));
         assert_eq!(reloaded, values);
+    }
+
+    /// Parse ini text the same way the app does (backslashes are literal).
+    fn load_ini_no_escape(text: &str) -> Ini {
+        let opt = ParseOption {
+            enabled_escape: false,
+            ..Default::default()
+        };
+        Ini::load_from_str_opt(text, opt).unwrap()
     }
 
     #[test]

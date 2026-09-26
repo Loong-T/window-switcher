@@ -828,13 +828,12 @@ fn error_box(hwnd: HWND, text: &str) {
 fn restart_app() -> Result<()> {
     use std::os::windows::process::CommandExt;
     let exe = std::env::current_exe().map_err(|err| anyhow!("Failed to locate the exe, {err}"))?;
-    let script = format!(
-        "timeout /t 2 /nobreak >nul & start \"\" \"{}\"",
-        exe.display()
-    );
-    Command::new("cmd.exe")
-        .arg("/C")
-        .arg(&script)
+    // The new instance waits for this one to exit and release the
+    // single-instance mutex (see `--restart` in main.rs). Spawning the exe
+    // directly — instead of going through cmd — keeps the elevation level and
+    // avoids cmd's quote handling mangling paths with spaces.
+    Command::new(exe)
+        .arg("--restart")
         .creation_flags(CREATE_NO_WINDOW.0)
         .spawn()
         .map_err(|err| anyhow!("Failed to restart, {err}"))?;

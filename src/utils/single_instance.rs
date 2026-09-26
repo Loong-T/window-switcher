@@ -23,6 +23,11 @@ impl SingleInstance {
             .map_err(|err| anyhow!("Fail to setup single instance, {err}"))?;
         let handle =
             if windows::core::Error::from_win32().code() == ERROR_ALREADY_EXISTS.to_hresult() {
+                // The mutex already exists; close the handle opened on it so
+                // repeated probes (e.g. `--restart` waiting) don't leak one.
+                unsafe {
+                    let _ = CloseHandle(handle);
+                }
                 None
             } else {
                 Some(handle)
