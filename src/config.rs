@@ -362,6 +362,12 @@ fn normalize_path_value(value: &str) -> String {
     value.replace("\\\\", "\\")
 }
 
+/// Escape a path value for the ini file, the inverse of
+/// [`normalize_path_value`], so the GUI can show real paths.
+fn escape_path_value(value: &str) -> String {
+    value.replace('\\', "\\\\")
+}
+
 pub(crate) fn parse_hotkeys(id: u32, name: &str, value: &str) -> Result<Vec<Hotkey>> {
     let parts: Vec<&str> = value.split("||").collect();
     let mut hotkeys = vec![];
@@ -379,7 +385,10 @@ pub(crate) fn parse_hotkeys(id: u32, name: &str, value: &str) -> Result<Vec<Hotk
 }
 
 /// The values of all config entries managed by the settings GUI.
-/// Strings are kept exactly as they appear in the ini file.
+///
+/// String fields hold human-facing values: path-like entries (blacklist,
+/// override icons, log path) are unescaped real paths, not the `\\`-escaped
+/// form stored in the ini file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IniValues {
     pub trayicon: bool,
@@ -433,8 +442,8 @@ fn ini_values_from(ini: &Ini) -> IniValues {
             .unwrap_or("alt+`")
             .to_string(),
         switch_windows_blacklist: get(Some("switch-windows"), "blacklist")
-            .unwrap_or_default()
-            .to_string(),
+            .map(normalize_path_value)
+            .unwrap_or_default(),
         switch_windows_ignore_minimal: get_bool(Some("switch-windows"), "ignore_minimal", false),
         switch_windows_only_current_desktop: get_desktop(Some("switch-windows")),
         switch_windows_merge_browser_profiles: get_bool(
@@ -449,10 +458,12 @@ fn ini_values_from(ini: &Ini) -> IniValues {
         switch_apps_ignore_minimal: get_bool(Some("switch-apps"), "ignore_minimal", false),
         switch_apps_only_current_desktop: get_desktop(Some("switch-apps")),
         switch_apps_override_icons: get(Some("switch-apps"), "override_icons")
-            .unwrap_or_default()
-            .to_string(),
+            .map(normalize_path_value)
+            .unwrap_or_default(),
         log_level: get(Some("log"), "level").unwrap_or("info").to_string(),
-        log_path: get(Some("log"), "path").unwrap_or_default().to_string(),
+        log_path: get(Some("log"), "path")
+            .map(normalize_path_value)
+            .unwrap_or_default(),
     }
 }
 
@@ -492,7 +503,7 @@ fn apply_ini_values(content: &str, newline: &str, values: &IniValues) -> String 
         (
             Some("switch-windows"),
             "blacklist",
-            values.switch_windows_blacklist.trim().to_string(),
+            escape_path_value(values.switch_windows_blacklist.trim()),
         ),
         (
             Some("switch-windows"),
@@ -532,10 +543,14 @@ fn apply_ini_values(content: &str, newline: &str, values: &IniValues) -> String 
         (
             Some("switch-apps"),
             "override_icons",
-            values.switch_apps_override_icons.trim().to_string(),
+            escape_path_value(values.switch_apps_override_icons.trim()),
         ),
         (Some("log"), "level", values.log_level.trim().to_string()),
-        (Some("log"), "path", values.log_path.trim().to_string()),
+        (
+            Some("log"),
+            "path",
+            escape_path_value(values.log_path.trim()),
+        ),
     ];
 
     let mut lines: Vec<String> = Vec::new();
@@ -649,7 +664,7 @@ mod tests {
             switch_windows_merge_browser_profiles: true,
             switch_apps_enable: true,
             log_level: "debug".to_string(),
-            log_path: r"C:\\Users\\loong\\Programs\\window-switcher\\log.log".to_string(),
+            log_path: r"C:\Users\loong\Programs\window-switcher\log.log".to_string(),
             ..values
         };
         let updated = apply_ini_values(DEFAULT_CONFIG, "\n", &values);
@@ -666,8 +681,9 @@ mod tests {
         assert!(updated.contains("merge_browser_profiles = yes"));
         assert!(updated.contains("enable = yes"));
         assert!(updated.contains("level = debug"));
-        // escaped paths are written back verbatim
+        // real paths are written back escaped, matching the ini convention
         assert!(updated.contains(r"path = C:\\Users\\loong\\Programs\\window-switcher\\log.log"));
+        assert!(!updated.contains(r"path = C:\Users"));
         assert!(!updated.contains("hotkey = alt+`"));
 
         // every managed value must survive a reload (same options as the app)
@@ -717,6 +733,29 @@ mod tests {
 
         let reloaded = ini_values_from(&load_ini_no_escape(&updated));
         assert_eq!(reloaded, values);
+    }
+
+    #[test]
+    fn test_ini_values_unescape_paths_for_gui() {
+        // an ini written by hand or by a previous version keeps `\\`;
+        // the GUI shows (and saves from) the real single-backslash path
+        let content = "[switch-windows]\nblacklist = C:\\Games\\a.exe,b.exe\n\n[switch-apps]\noverride_icons = app.exe=C:\\Icons\\app.ico\n\n[log]\npath = C:\\Users\\loong\\Programs\\window-switcher\\log.log\n";
+        let values = ini_values_from(&load_ini_no_escape(content));
+        assert_eq!(values.switch_windows_blacklist, r"C:\Games\a.exe,b.exe");
+        assert_eq!(
+            values.switch_apps_override_icons,
+            r"app.exe=C:\Icons\app.ico"
+        );
+        assert_eq!(
+            values.log_path,
+            r"C:\Users\loong\Programs\window-switcher\log.log"
+        );
+
+        // saving those back escapes them again, keeping the file unchanged
+        let updated = apply_ini_values(content, "\n", &values);
+        assert!(updated.contains(r"blacklist = C:\\Games\\a.exe,b.exe"));
+        assert!(updated.contains(r"override_icons = app.exe=C:\\Icons\\app.ico"));
+        assert!(updated.contains(r"path = C:\\Users\\loong\\Programs\\window-switcher\\log.log"));
     }
 
     /// Parse ini text the same way the app does (backslashes are literal).
