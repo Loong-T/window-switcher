@@ -9,8 +9,10 @@ mod config;
 mod foreground;
 mod keyboard;
 mod painter;
+mod settings;
 mod startup;
 mod trayicon;
 
 pub use crate::app::start;
 pub use crate::config::{load_config, Config};
+pub use crate::settings::open as open_settings;

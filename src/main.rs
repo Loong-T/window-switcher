@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use window_switcher::{alert, load_config, start, utils::SingleInstance};
+use window_switcher::{alert, load_config, open_settings, start, utils::SingleInstance};
 
 fn main() {
     if let Err(err) = run() {
@@ -20,6 +20,11 @@ fn run() -> Result<()> {
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
         );
+    }
+
+    // Open the settings GUI without starting the background switcher.
+    if std::env::args().nth(1).as_deref() == Some("settings") {
+        return open_settings(None);
     }
 
     let config = load_config().unwrap_or_default();

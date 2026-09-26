@@ -93,6 +93,10 @@ unsafe fn send_message_timeout(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 }
 
 unsafe extern "system" fn keyboard_proc(code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+    if crate::settings::SETTINGS_OPEN.load(std::sync::atomic::Ordering::SeqCst) {
+        // The settings window owns the keyboard; pass every key through.
+        return CallNextHookEx(None, code, w_param, l_param);
+    }
     let kbd_data: &KBDLLHOOKSTRUCT = &*(l_param.0 as *const _);
     debug!("keyboard {kbd_data:?}");
     let mut is_modifier = false;

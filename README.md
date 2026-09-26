@@ -33,7 +33,13 @@ scoop install extras/window-switcher
 
 Window-Switcher offers various customization options to tailor its behavior to your preferences. You can define custom keyboard shortcuts, enable or disable specific features, and fine-tune settings through a configuration file.
 
-To personalize Window-Switcher, you'll need a configuration file named `window-switcher.ini`. This file should be placed in the same directory as the `window-switcher.exe` file. Once you've made changes to the configuration, make sure to restart Window-Switcher so your new settings can take effect.
+### Settings GUI
+
+Right-click the tray icon and choose **Configure** to open the settings window (or run `window-switcher.exe settings`). It edits `window-switcher.ini` with validation and preserves your comments and any manual edits. After saving you can restart Window Switcher directly from the dialog to apply the changes; the **Open Config File…** button reveals the raw file for power users.
+
+### Config file
+
+To personalize Window-Switcher by hand, edit the configuration file `window-switcher.ini` placed in the same directory as `window-switcher.exe`. Once you've made changes to the configuration, make sure to restart Window-Switcher so your new settings can take effect.
 
 Here is the default configuration:
 

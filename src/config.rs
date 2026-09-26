@@ -334,9 +334,9 @@ pub fn load_config() -> Result<Config> {
     Config::load(&conf)
 }
 
-pub(crate) fn edit_config_file() -> Result<bool> {
+/// Open the config file in a text editor without blocking the caller.
+pub(crate) fn open_config_editor() -> Result<()> {
     let filepath = get_config_path()?;
-    debug!("open config file '{}'", filepath.display());
     if !filepath.exists() {
         fs::write(&filepath, DEFAULT_CONFIG).map_err(|err| {
             anyhow!(
@@ -345,19 +345,11 @@ pub(crate) fn edit_config_file() -> Result<bool> {
             )
         })?;
     }
-    let exit = Command::new("notepad.exe")
+    Command::new("notepad.exe")
         .arg(&filepath)
         .spawn()
-        .map_err(|err| anyhow!("Failed to open config file '{}', {err}", filepath.display()))?
-        .wait()
-        .map_err(|err| {
-            anyhow!(
-                "Failed to close config file '{}', {err}",
-                filepath.display()
-            )
-        })?;
-
-    Ok(exit.success())
+        .map_err(|err| anyhow!("Failed to open config file '{}', {err}", filepath.display()))?;
+    Ok(())
 }
 
 fn get_config_path() -> Result<PathBuf> {
@@ -370,7 +362,7 @@ fn normalize_path_value(value: &str) -> String {
     value.replace("\\\\", "\\")
 }
 
-fn parse_hotkeys(id: u32, name: &str, value: &str) -> Result<Vec<Hotkey>> {
+pub(crate) fn parse_hotkeys(id: u32, name: &str, value: &str) -> Result<Vec<Hotkey>> {
     let parts: Vec<&str> = value.split("||").collect();
     let mut hotkeys = vec![];
     for part in parts {
@@ -384,6 +376,252 @@ fn parse_hotkeys(id: u32, name: &str, value: &str) -> Result<Vec<Hotkey>> {
         return Err(anyhow!("Invalid {name} hotkey"));
     }
     Ok(hotkeys)
+}
+
+/// The values of all config entries managed by the settings GUI.
+/// Strings are kept exactly as they appear in the ini file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IniValues {
+    pub trayicon: bool,
+    pub switch_windows_hotkey: String,
+    pub switch_windows_blacklist: String,
+    pub switch_windows_ignore_minimal: bool,
+    /// `None` means "auto" (follow the Windows Alt-Tab virtual desktop setting).
+    pub switch_windows_only_current_desktop: Option<bool>,
+    pub switch_windows_merge_browser_profiles: bool,
+    pub switch_apps_enable: bool,
+    pub switch_apps_hotkey: String,
+    pub switch_apps_ignore_minimal: bool,
+    pub switch_apps_only_current_desktop: Option<bool>,
+    pub switch_apps_override_icons: String,
+    pub log_level: String,
+    pub log_path: String,
+}
+
+/// Read the GUI-managed values from the config file, falling back to the
+/// defaults shipped with the app when the file does not exist.
+pub(crate) fn read_ini_values() -> Result<IniValues> {
+    let path = get_config_path()?;
+    let ini = if path.exists() {
+        let opt = ParseOption {
+            enabled_escape: false,
+            ..Default::default()
+        };
+        Ini::load_from_file_opt(&path, opt)
+            .map_err(|err| anyhow!("Failed to load config file '{}', {err}", path.display()))?
+    } else {
+        Ini::load_from_str(DEFAULT_CONFIG)?
+    };
+    Ok(ini_values_from(&ini))
+}
+
+fn ini_values_from(ini: &Ini) -> IniValues {
+    let get = |section: Option<&str>, key: &str| -> Option<&str> {
+        ini.section(section).and_then(|s| s.get(key))
+    };
+    let get_bool = |section: Option<&str>, key: &str, default: bool| -> bool {
+        get(section, key)
+            .and_then(Config::to_bool)
+            .unwrap_or(default)
+    };
+    let get_desktop = |section: Option<&str>| -> Option<bool> {
+        get(section, "only_current_desktop").and_then(Config::to_bool)
+    };
+    IniValues {
+        trayicon: get_bool(None, "trayicon", true),
+        switch_windows_hotkey: get(Some("switch-windows"), "hotkey")
+            .unwrap_or("alt+`")
+            .to_string(),
+        switch_windows_blacklist: get(Some("switch-windows"), "blacklist")
+            .unwrap_or_default()
+            .to_string(),
+        switch_windows_ignore_minimal: get_bool(Some("switch-windows"), "ignore_minimal", false),
+        switch_windows_only_current_desktop: get_desktop(Some("switch-windows")),
+        switch_windows_merge_browser_profiles: get_bool(
+            Some("switch-windows"),
+            "merge_browser_profiles",
+            false,
+        ),
+        switch_apps_enable: get_bool(Some("switch-apps"), "enable", false),
+        switch_apps_hotkey: get(Some("switch-apps"), "hotkey")
+            .unwrap_or("alt+tab")
+            .to_string(),
+        switch_apps_ignore_minimal: get_bool(Some("switch-apps"), "ignore_minimal", false),
+        switch_apps_only_current_desktop: get_desktop(Some("switch-apps")),
+        switch_apps_override_icons: get(Some("switch-apps"), "override_icons")
+            .unwrap_or_default()
+            .to_string(),
+        log_level: get(Some("log"), "level").unwrap_or("info").to_string(),
+        log_path: get(Some("log"), "path").unwrap_or_default().to_string(),
+    }
+}
+
+/// Persist the GUI-managed values to the config file.
+///
+/// The file is edited line by line instead of round-tripping through `Ini`,
+/// so comments, blank lines, unknown keys and their ordering are preserved.
+pub(crate) fn write_ini_values(values: &IniValues) -> Result<PathBuf> {
+    let path = get_config_path()?;
+    let content = fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let updated = apply_ini_values(&content, newline, values);
+    fs::write(&path, updated)
+        .map_err(|err| anyhow!("Failed to write config file '{}', {err}", path.display()))?;
+    Ok(path)
+}
+
+/// Update the value of every managed key in the ini text, leaving every other
+/// line (comments included) untouched.
+fn apply_ini_values(content: &str, newline: &str, values: &IniValues) -> String {
+    let yn = |v: bool| if v { "yes" } else { "no" };
+    let desktop = |v: Option<bool>| match v {
+        None => "auto".to_string(),
+        Some(v) => yn(v).to_string(),
+    };
+    let mut pending: Vec<(Option<&str>, &str, String)> = vec![
+        (None, "trayicon", yn(values.trayicon).to_string()),
+        (
+            Some("switch-windows"),
+            "hotkey",
+            values.switch_windows_hotkey.trim().to_string(),
+        ),
+        (
+            Some("switch-windows"),
+            "blacklist",
+            values.switch_windows_blacklist.trim().to_string(),
+        ),
+        (
+            Some("switch-windows"),
+            "ignore_minimal",
+            yn(values.switch_windows_ignore_minimal).to_string(),
+        ),
+        (
+            Some("switch-windows"),
+            "only_current_desktop",
+            desktop(values.switch_windows_only_current_desktop),
+        ),
+        (
+            Some("switch-windows"),
+            "merge_browser_profiles",
+            yn(values.switch_windows_merge_browser_profiles).to_string(),
+        ),
+        (
+            Some("switch-apps"),
+            "enable",
+            yn(values.switch_apps_enable).to_string(),
+        ),
+        (
+            Some("switch-apps"),
+            "hotkey",
+            values.switch_apps_hotkey.trim().to_string(),
+        ),
+        (
+            Some("switch-apps"),
+            "ignore_minimal",
+            yn(values.switch_apps_ignore_minimal).to_string(),
+        ),
+        (
+            Some("switch-apps"),
+            "only_current_desktop",
+            desktop(values.switch_apps_only_current_desktop),
+        ),
+        (
+            Some("switch-apps"),
+            "override_icons",
+            values.switch_apps_override_icons.trim().to_string(),
+        ),
+        (Some("log"), "level", values.log_level.trim().to_string()),
+        (Some("log"), "path", values.log_path.trim().to_string()),
+    ];
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut section: Option<String> = None;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.contains(']') {
+            let end = trimmed.find(']').unwrap_or(trimmed.len());
+            section = Some(trimmed[1..end].trim().to_string());
+            lines.push(line.to_string());
+            continue;
+        }
+        if !trimmed.starts_with(';') && !trimmed.starts_with('#') {
+            if let Some(eq) = line.find('=') {
+                let key = line[..eq].trim();
+                let matched = pending.iter().position(|(sec, k, _)| {
+                    sec.as_deref() == section.as_deref() && k.eq_ignore_ascii_case(key)
+                });
+                if let Some(i) = matched {
+                    let (_, key, value) = pending.remove(i);
+                    lines.push(format!("{key} = {value}"));
+                    continue;
+                }
+            }
+        }
+        lines.push(line.to_string());
+    }
+
+    // Append entries whose key was missing from the file. Keys of the unnamed
+    // top section go before the first section header; the rest are appended at
+    // the end of their section, or in a newly created section.
+    if !pending.is_empty() {
+        let header_of = |lines: &[String]| -> Vec<Option<String>> {
+            let mut current = None;
+            lines
+                .iter()
+                .map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with('[') && trimmed.contains(']') {
+                        let end = trimmed.find(']').unwrap_or(trimmed.len());
+                        current = Some(trimmed[1..end].trim().to_string());
+                    }
+                    current.clone()
+                })
+                .collect()
+        };
+
+        while let Some((sec, key, value)) = pending.first().cloned() {
+            let entry = format!("{key} = {value}");
+            match sec {
+                None => {
+                    let headers = header_of(&lines);
+                    let at = headers
+                        .iter()
+                        .position(|s| s.is_some())
+                        .unwrap_or(lines.len());
+                    lines.insert(at, entry);
+                }
+                Some(name) => {
+                    let headers = header_of(&lines);
+                    let at = match headers.iter().position(|s| s.as_deref() == Some(name)) {
+                        Some(start) => {
+                            let mut end = start + 1;
+                            while end < headers.len() && headers[end].as_deref() == Some(name) {
+                                end += 1;
+                            }
+                            end
+                        }
+                        None => {
+                            lines.push(String::new());
+                            lines.push(format!("[{name}]"));
+                            lines.len()
+                        }
+                    };
+                    lines.insert(at, entry);
+                }
+            }
+            pending.remove(0);
+        }
+    }
+
+    let mut out = lines.join(newline);
+    if !out.ends_with(newline) {
+        out.push_str(newline);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -400,6 +638,73 @@ mod tests {
         let conf = Config::load(&ini_conf)?;
         assert!(!conf.switch_windows_merge_browser_profiles);
         Ok(())
+    }
+
+    #[test]
+    fn test_apply_ini_values_preserves_comments() {
+        let values = ini_values_from(&Ini::load_from_str(DEFAULT_CONFIG).unwrap());
+        let values = IniValues {
+            trayicon: false,
+            switch_windows_hotkey: "ctrl+q".to_string(),
+            switch_windows_merge_browser_profiles: true,
+            switch_apps_enable: true,
+            log_level: "debug".to_string(),
+            ..values
+        };
+        let updated = apply_ini_values(DEFAULT_CONFIG, "\n", &values);
+
+        let comment_before = DEFAULT_CONFIG
+            .lines()
+            .filter(|l| l.starts_with('#'))
+            .count();
+        let comment_after = updated.lines().filter(|l| l.starts_with('#')).count();
+        assert_eq!(comment_before, comment_after);
+
+        assert!(updated.contains("trayicon = no"));
+        assert!(updated.contains("hotkey = ctrl+q"));
+        assert!(updated.contains("merge_browser_profiles = yes"));
+        assert!(updated.contains("enable = yes"));
+        assert!(updated.contains("level = debug"));
+        assert!(!updated.contains("hotkey = alt+`"));
+
+        // every managed value must survive a reload
+        let reloaded = ini_values_from(&Ini::load_from_str(&updated).unwrap());
+        assert_eq!(reloaded, values);
+    }
+
+    #[test]
+    fn test_apply_ini_values_appends_missing_keys() {
+        let content = "[switch-windows]\nhotkey = alt+`\n; a comment\n";
+        let values = IniValues {
+            trayicon: true,
+            switch_windows_hotkey: "alt+`".to_string(),
+            switch_windows_blacklist: String::new(),
+            switch_windows_ignore_minimal: false,
+            switch_windows_only_current_desktop: None,
+            switch_windows_merge_browser_profiles: true,
+            switch_apps_enable: false,
+            switch_apps_hotkey: "alt+tab".to_string(),
+            switch_apps_ignore_minimal: false,
+            switch_apps_only_current_desktop: None,
+            switch_apps_override_icons: String::new(),
+            log_level: "info".to_string(),
+            log_path: String::new(),
+        };
+        let updated = apply_ini_values(content, "\r\n", &values);
+
+        // trayicon must land before the first section header
+        let trayicon_at = updated.find("trayicon = yes").unwrap();
+        let first_header_at = updated.find("[switch-windows]").unwrap();
+        assert!(trayicon_at < first_header_at);
+
+        assert!(updated.contains("merge_browser_profiles = yes"));
+        assert!(updated.contains("[switch-apps]"));
+        assert!(updated.contains("[log]"));
+        assert!(updated.contains("; a comment"));
+        assert!(updated.contains("\r\n"));
+
+        let reloaded = ini_values_from(&Ini::load_from_str(&updated).unwrap());
+        assert_eq!(reloaded, values);
     }
 
     #[test]

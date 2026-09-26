@@ -1,4 +1,4 @@
-use crate::config::{edit_config_file, Config};
+use crate::config::Config;
 use crate::foreground::ForegroundWatcher;
 use crate::keyboard::KeyboardListener;
 use crate::painter::GdiAAPainter;
@@ -278,7 +278,7 @@ impl App {
                             app.startup.toggle()?;
                         }
                         IDM_CONFIGURE => {
-                            if let Err(err) = edit_config_file() {
+                            if let Err(err) = crate::settings::open(Some(hwnd)) {
                                 alert!("{err}");
                             }
                         }
