@@ -56,6 +56,10 @@ ignore_minimal = no
 # Only switch within the current virtual desktops: yes/no/auto
 only_current_desktop = auto
 
+# Treat all windows of the same browser (Chrome/Edge) as one app,
+# ignoring which profile each window belongs to: yes/no
+merge_browser_profiles = no
+
 [switch-apps]
 
 # Whether to enable switching apps

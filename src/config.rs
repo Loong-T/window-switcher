@@ -22,6 +22,7 @@ pub struct Config {
     pub switch_windows_blacklist: HashSet<String>,
     pub switch_windows_ignore_minimal: bool,
     switch_windows_only_current_desktop: Option<bool>,
+    pub switch_windows_merge_browser_profiles: bool,
     pub switch_apps_enable: bool,
     pub switch_apps_hotkey: Vec<Hotkey>,
     pub switch_apps_ignore_minimal: bool,
@@ -44,6 +45,7 @@ impl Default for Config {
             switch_windows_blacklist: Default::default(),
             switch_windows_ignore_minimal: false,
             switch_windows_only_current_desktop: None,
+            switch_windows_merge_browser_profiles: false,
             switch_apps_enable: false,
             switch_apps_hotkey: vec![Hotkey::create(
                 SWITCH_APPS_HOTKEY_ID,
@@ -106,6 +108,12 @@ impl Config {
                 .and_then(Config::to_bool)
             {
                 conf.switch_windows_only_current_desktop = Some(v);
+            }
+            if let Some(v) = section
+                .get("merge_browser_profiles")
+                .and_then(Config::to_bool)
+            {
+                conf.switch_windows_merge_browser_profiles = v;
             }
         }
         if let Some(section) = ini_conf.section(Some("switch-apps")) {
@@ -381,6 +389,18 @@ fn parse_hotkeys(id: u32, name: &str, value: &str) -> Result<Vec<Hotkey>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_merge_browser_profiles() -> Result<()> {
+        let ini_conf = Ini::load_from_str("[switch-windows]\nmerge_browser_profiles = yes\n")?;
+        let conf = Config::load(&ini_conf)?;
+        assert!(conf.switch_windows_merge_browser_profiles);
+
+        let ini_conf = Ini::load_from_str(DEFAULT_CONFIG)?;
+        let conf = Config::load(&ini_conf)?;
+        assert!(!conf.switch_windows_merge_browser_profiles);
+        Ok(())
+    }
 
     #[test]
     fn test_hotkey() {
